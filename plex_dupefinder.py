@@ -19,10 +19,17 @@ except ImportError:
 from plexapi.server import PlexServer
 import requests
 from ddtrace.debugging import DynamicInstrumentation
-from ddtrace import tracer
+from ddtrace import tracer    
+from openfeature.evaluation_context import EvaluationContext
 
+# Start the Datadog tracer
+tracer.configure()
+
+# Create and register the Datadog OpenFeature provider
 DynamicInstrumentation.enable()
-ddtrace.patch(logging=True)
+from ddtrace import patch
+patch(logging=True)
+
 ############################################################
 # INIT
 ############################################################
@@ -55,7 +62,36 @@ console_formatter = logging.Formatter('%(asctime)s %(levelname)s - %(message)s')
 console_handler.setFormatter(console_formatter)
 logging.getLogger('').addHandler(console_handler)
 
-log = logging.getLogger(__name__)
+log = logging.getLogger(__name__) 
+
+# Optional OpenFeature support
+try:
+    from openfeature import api as openfeature_api
+    from ddtrace.openfeature import DatadogProvider
+    from openfeature.evaluation_context import EvaluationContext
+except Exception:
+    openfeature_api = None
+    DatadogProvider = None
+    EvaluationContext = None
+
+if openfeature_api and DatadogProvider:
+    provider = DatadogProvider()
+    openfeature_api.set_provider(provider)
+
+    client = openfeature_api.get_client("plex_dupefinder")
+
+    eval_ctx = EvaluationContext(
+        targeting_key="Test",
+        attributes={"userId": "tester", "userRole": "tester"},
+    )
+
+    value = client.get_boolean_value(
+        flag_key="feature-flag-test",
+        default_value=False,
+        evaluation_context=eval_ctx,
+    )
+else:
+    log.warning("OpenFeature is not available on this Python version; skipping feature flag setup.") 
 
 AUDIO_CODEC_SCORES = {codec.lower(): int(score) for codec, score in cfg['AUDIO_CODEC_SCORES'].items()}
 VIDEO_CODEC_SCORES = {codec.lower(): int(score) for codec, score in cfg['VIDEO_CODEC_SCORES'].items()}
@@ -68,7 +104,6 @@ SKIP_LIST = tuple(skip_item.lower() for skip_item in cfg['SKIP_LIST'])
 ############################################################
 # PLEX METHODS
 ############################################################
-
 
 def get_dupes(plex_section_name):
     try:
@@ -378,24 +413,24 @@ def process_section(section):
 
 if __name__ == "__main__":
     with tracer.trace("plex_dupefinder_run"):
-        log.info("""
-       _                 _                   __ _           _
- _ __ | | _____  __   __| |_   _ _ __   ___ / _(_)_ __   __| | ___ _ __
-| '_ \| |/ _ \ \/ /  / _` | | | | '_ \ / _ \ |_| | '_ \ / _` |/ _ \ '__|
-| |_) | |  __/>  <  | (_| | |_| | |_) |  __/  _| | | | | (_| |  __/ |
-| .__/|_|\___/_/\_\  \__,_|\__,_| .__/ \___|_| |_|_| |_|\__,_|\___|_|
-|_|                             |_|
+        log.info(r"""
+        _                 _                   __ _           _
+    _ __ | | _____  __   __| |_   _ _ __   ___ / _(_)_ __   __| | ___ _ __
+    | '_ \| |/ _ \ \/ /  / _` | | | | '_ \ / _ \ |_| | '_ \ / _` |/ _ \ '__|
+    | |_) | |  __/>  <  | (_| | |_| | |_) |  __/  _| | | | | (_| |  __/ |
+    | .__/|_|\___/_/\_\  \__,_|\__,_| .__/ \___|_| |_|_| |_|\__,_|\___|_|
+    |_|                             |_|
 
-#########################################################################
-# Author:   l3uddz                                                      #
-# URL:      https://github.com/l3uddz/plex_dupefinder                   #
-# --                                                                    #
-#         Part of the Cloudbox project: https://cloudbox.works          #
-#########################################################################
-#                   GNU General Public License v3.0                     #
-#########################################################################
-""")
-    log.info("Initialized")
+    #########################################################################
+    # Author:   l3uddz                                                      #
+    # URL:      https://github.com/l3uddz/plex_dupefinder                   #
+    # --                                                                    #
+    #         Part of the Cloudbox project: https://cloudbox.works          #
+    #########################################################################
+    #                   GNU General Public License v3.0                     #
+    #########################################################################
+        """)
+        log.info("Initialized")
 
     # Setup PlexServer object
     try:
