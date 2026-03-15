@@ -4,11 +4,11 @@ import sys
 import logging
 import collections
 import concurrent.futures
-import itertools
 import logging
 import os
 import sys
 import time
+from functools import lru_cache
 from fnmatch import fnmatch
 from tabulate import tabulate
 from config import cfg
@@ -57,6 +57,12 @@ logging.getLogger('').addHandler(console_handler)
 
 log = logging.getLogger(__name__)
 
+AUDIO_CODEC_SCORES = {codec.lower(): int(score) for codec, score in cfg['AUDIO_CODEC_SCORES'].items()}
+VIDEO_CODEC_SCORES = {codec.lower(): int(score) for codec, score in cfg['VIDEO_CODEC_SCORES'].items()}
+VIDEO_RESOLUTION_SCORES = {resolution.lower(): int(score) for resolution, score in cfg['VIDEO_RESOLUTION_SCORES'].items()}
+FILENAME_SCORE_RULES = tuple((pattern.lower(), int(score)) for pattern, score in cfg['FILENAME_SCORES'].items())
+SKIP_LIST = tuple(skip_item.lower() for skip_item in cfg['SKIP_LIST'])
+
 @tracer.wrap()
 
 ############################################################
@@ -83,29 +89,26 @@ def get_dupes(plex_section_name):
 def get_score(media_info):
     score = 0
     # score audio codec
-    for codec, codec_score in cfg['AUDIO_CODEC_SCORES'].items():
-        if codec.lower() == media_info['audio_codec'].lower():
-            score += int(codec_score)
-            log.debug("Added %d to score for audio_codec being %r", int(codec_score), str(codec))
-            break
+    audio_codec_score = AUDIO_CODEC_SCORES.get(media_info['audio_codec'].lower(), 0)
+    score += audio_codec_score
+    if audio_codec_score:
+        log.debug("Added %d to score for audio_codec being %r", audio_codec_score, media_info['audio_codec'])
     # score video codec
-    for codec, codec_score in cfg['VIDEO_CODEC_SCORES'].items():
-        if codec.lower() == media_info['video_codec'].lower():
-            score += int(codec_score)
-            log.debug("Added %d to score for video_codec being %r", int(codec_score), str(codec))
-            break
+    video_codec_score = VIDEO_CODEC_SCORES.get(media_info['video_codec'].lower(), 0)
+    score += video_codec_score
+    if video_codec_score:
+        log.debug("Added %d to score for video_codec being %r", video_codec_score, media_info['video_codec'])
     # score video resolution
-    for resolution, resolution_score in cfg['VIDEO_RESOLUTION_SCORES'].items():
-        if resolution.lower() == media_info['video_resolution'].lower():
-            score += int(resolution_score)
-            log.debug("Added %d to score for video_resolution being %r", int(resolution_score), str(resolution))
-            break
+    resolution_score = VIDEO_RESOLUTION_SCORES.get(media_info['video_resolution'].lower(), 0)
+    score += resolution_score
+    if resolution_score:
+        log.debug("Added %d to score for video_resolution being %r", resolution_score, media_info['video_resolution'])
     # score filename
-    for filename_keyword, keyword_score in cfg['FILENAME_SCORES'].items():
-        for filename in media_info['file']:
-            if fnmatch(os.path.basename(filename.lower()), filename_keyword.lower()):
-                score += int(keyword_score)
-                log.debug("Added %d to score for match filename_keyword %s", int(keyword_score), filename_keyword)
+    for filename in media_info['file']:
+        filename_score = get_filename_score(os.path.basename(filename).lower())
+        score += filename_score
+        if filename_score:
+            log.debug("Added %d to score for filename %s", filename_score, filename)
     # add bitrate to score
     score += int(media_info['video_bitrate']) * 2
     log.debug("Added %d to score for video bitrate", int(media_info['video_bitrate']) * 2)
@@ -126,6 +129,15 @@ def get_score(media_info):
         score += int(media_info['file_size']) / 100000
         log.debug("Added %d to score for total file size", int(media_info['file_size']) / 100000)
     return int(score)
+
+
+@lru_cache(maxsize=8192)
+def get_filename_score(filename):
+    total_score = 0
+    for filename_keyword, keyword_score in FILENAME_SCORE_RULES:
+        if fnmatch(filename, filename_keyword):
+            total_score += keyword_score
+    return total_score
 
 
 def get_media_info(item):
@@ -237,9 +249,15 @@ def write_decision(title=None, keeping=None, removed=None):
 
 
 def should_skip(files):
-    return any(skip_item in str(files_item) for files_item, skip_item in itertools.product(files, cfg['SKIP_LIST']))
+    return any(should_skip_path(str(files_item).lower()) for files_item in files)
 
 
+@lru_cache(maxsize=8192)
+def should_skip_path(file_path):
+    return any(skip_item in file_path for skip_item in SKIP_LIST)
+
+
+@lru_cache(maxsize=8192)
 def millis_to_string(millis):
     """ reference: https://stackoverflow.com/a/35990338 """
     try:
@@ -254,6 +272,7 @@ def millis_to_string(millis):
     return "%d milliseconds" % millis
 
 
+@lru_cache(maxsize=8192)
 def bytes_to_string(size_bytes):
     """
     reference: https://stackoverflow.com/a/6547474
@@ -279,6 +298,7 @@ def bytes_to_string(size_bytes):
     return "%d bytes" % size_bytes
 
 
+@lru_cache(maxsize=8192)
 def kbps_to_string(size_kbps):
     try:
         if size_kbps < 1024:
@@ -389,31 +409,16 @@ if __name__ == "__main__":
     process_later = {}
     # process sections
     log.info("Finding dupes...")
-    for section in cfg['PLEX_LIBRARIES']:
-        dupes = get_dupes(section)
-        log.info("Found %d dupes for section %r" % (len(dupes), section))
-        # loop returned duplicates
-        for item in dupes:
-            if item.type == 'episode':
-                title = "%s - %02dx%02d - %s" % (
-                    item.grandparentTitle, int(item.parentIndex), int(item.index), item.title)
-            elif item.type == 'movie':
-                title = item.title
-            else:
-                title = 'Unknown'
-
-            log.info("Processing: %r", title)
-            # loop returned parts for media item (copy 1, copy 2...)
-            parts = {}
-            for part in item.media:
-                part_info = get_media_info(part)
-                if not cfg['FIND_DUPLICATE_FILEPATHS_ONLY']:
-                    part_info['score'] = get_score(part_info)
-                part_info['show_key'] = item.key
-                log.info("ID: %r - Score: %s - Meta:\n%r", part.id, part_info.get('score', 'N/A'),
-                         part_info)
-                parts[part.id] = part_info
-            process_later[title] = parts
+    max_workers = min(len(cfg['PLEX_LIBRARIES']), os.cpu_count() or 1)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        section_futures = {
+            section: executor.submit(process_section, section)
+            for section in cfg['PLEX_LIBRARIES']
+        }
+        for section in cfg['PLEX_LIBRARIES']:
+            _, dupe_count, section_results = section_futures[section].result()
+            log.info("Found %d dupes for section %r" % (dupe_count, section))
+            process_later.update(section_results)
 
     # process processed items
     time.sleep(5)
