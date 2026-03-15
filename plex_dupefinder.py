@@ -3,6 +3,7 @@ import ddtrace.sourcecode.setuptools_auto
 import sys
 import logging
 import collections
+import concurrent.futures
 import itertools
 import logging
 import os
@@ -323,6 +324,32 @@ def build_tabulated(parts, items):
                                             parts[item_id]['audio_channels']))
         part_data.append(tmp)
     return headers, part_data
+
+
+def process_section(section):
+    dupes = get_dupes(section)
+    section_results = {}
+    for item in dupes:
+        if item.type == 'episode':
+            title = "%s - %02dx%02d - %s" % (
+                item.grandparentTitle, int(item.parentIndex), int(item.index), item.title)
+        elif item.type == 'movie':
+            title = item.title
+        else:
+            title = 'Unknown'
+
+        log.info("Processing: %r", title)
+        parts = {}
+        for part in item.media:
+            part_info = get_media_info(part)
+            if not cfg['FIND_DUPLICATE_FILEPATHS_ONLY']:
+                part_info['score'] = get_score(part_info)
+            part_info['show_key'] = item.key
+            log.info("ID: %r - Score: %s - Meta:\n%r", part.id, part_info.get('score', 'N/A'),
+                     part_info)
+            parts[part.id] = part_info
+        section_results[title] = parts
+    return section, len(dupes), section_results
 
 
 ############################################################
