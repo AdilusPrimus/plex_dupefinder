@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import ddtrace.sourcecode.setuptools_auto
+import sys
 import logging
-
 import collections
 import itertools
 import logging
@@ -9,11 +9,8 @@ import os
 import sys
 import time
 from fnmatch import fnmatch
-
 from tabulate import tabulate
-
 from config import cfg
-
 try:
     from urlparse import urljoin
 except ImportError:
@@ -51,7 +48,6 @@ for handler in logging.getLogger().handlers:
         handler.setFormatter(jsonlogger.JsonFormatter(FORMAT))
 
 # Add console handler for simultaneous console output
-import sys
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.INFO)
 console_formatter = logging.Formatter('%(asctime)s %(levelname)s - %(message)s')
