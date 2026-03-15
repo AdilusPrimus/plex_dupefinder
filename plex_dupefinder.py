@@ -99,8 +99,6 @@ VIDEO_RESOLUTION_SCORES = {resolution.lower(): int(score) for resolution, score 
 FILENAME_SCORE_RULES = tuple((pattern.lower(), int(score)) for pattern, score in cfg['FILENAME_SCORES'].items())
 SKIP_LIST = tuple(skip_item.lower() for skip_item in cfg['SKIP_LIST'])
 
-@tracer.wrap()
-
 ############################################################
 # PLEX METHODS
 ############################################################
@@ -267,7 +265,6 @@ def delete_item(show_key, media_id):
 ############################################################
 
 decision_filename = os.path.join(os.path.dirname(os.path.realpath(sys.argv[0])), 'decisions.log')
-
 
 def write_decision(title=None, keeping=None, removed=None):
     lines = []
@@ -543,3 +540,20 @@ if __name__ == "__main__":
                         time.sleep(2)
             else:
                 log.info("Unable to determine best media item to keep for %r", item)
+
+    import time
+    import signal
+    import threading
+
+    stop_flag = threading.Event()
+
+    def handle_sigterm(signum, frame):
+        stop_flag.set()
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigterm)
+
+    start = time.time()
+    while time.time() - start < 600 and not stop_flag.is_set():
+        time.sleep(1)
+                
