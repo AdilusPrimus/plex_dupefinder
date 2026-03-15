@@ -53,12 +53,10 @@ def get_dupes(plex_section_name):
     sec_type = get_section_type(plex_section_name)
     dupe_search_results = plex.library.section(plex_section_name).search(duplicate=True, libtype=sec_type)
 
-    dupe_search_results_new = dupe_search_results.copy()
-    if cfg['FIND_DUPLICATE_FILEPATHS_ONLY']:
-        for dupe in dupe_search_results:
-            if any(x != dupe.locations[0] for x in dupe.locations):
-                dupe_search_results_new.remove(dupe)
-    return dupe_search_results_new
+    if not cfg['FIND_DUPLICATE_FILEPATHS_ONLY']:
+        return dupe_search_results
+
+    return [dupe for dupe in dupe_search_results if all(location == dupe.locations[0] for location in dupe.locations)]
 
 
 def get_section_type(plex_section_name):
