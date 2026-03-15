@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import collections
+import concurrent.futures
 import itertools
 import logging
 import os
@@ -316,6 +317,32 @@ def build_tabulated(parts, items):
     return headers, part_data
 
 
+def process_section(section):
+    dupes = get_dupes(section)
+    section_results = {}
+    for item in dupes:
+        if item.type == 'episode':
+            title = "%s - %02dx%02d - %s" % (
+                item.grandparentTitle, int(item.parentIndex), int(item.index), item.title)
+        elif item.type == 'movie':
+            title = item.title
+        else:
+            title = 'Unknown'
+
+        log.info("Processing: %r", title)
+        parts = {}
+        for part in item.media:
+            part_info = get_media_info(part)
+            if not cfg['FIND_DUPLICATE_FILEPATHS_ONLY']:
+                part_info['score'] = get_score(part_info)
+            part_info['show_key'] = item.key
+            log.info("ID: %r - Score: %s - Meta:\n%r", part.id, part_info.get('score', 'N/A'),
+                     part_info)
+            parts[part.id] = part_info
+        section_results[title] = parts
+    return section, len(dupes), section_results
+
+
 ############################################################
 # MAIN
 ############################################################
@@ -342,31 +369,19 @@ if __name__ == "__main__":
     process_later = {}
     # process sections
     print("Finding dupes...")
-    for section in cfg['PLEX_LIBRARIES']:
-        dupes = get_dupes(section)
-        print("Found %d dupes for section %r" % (len(dupes), section))
-        # loop returned duplicates
-        for item in dupes:
-            if item.type == 'episode':
-                title = "%s - %02dx%02d - %s" % (
-                    item.grandparentTitle, int(item.parentIndex), int(item.index), item.title)
-            elif item.type == 'movie':
-                title = item.title
-            else:
-                title = 'Unknown'
+    completed_sections = [None] * len(cfg['PLEX_LIBRARIES'])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(cfg['PLEX_LIBRARIES']))) as executor:
+        futures = {
+            executor.submit(process_section, section): idx
+            for idx, section in enumerate(cfg['PLEX_LIBRARIES'])
+        }
+        for future in concurrent.futures.as_completed(futures):
+            completed_sections[futures[future]] = future.result()
 
-            log.info("Processing: %r", title)
-            # loop returned parts for media item (copy 1, copy 2...)
-            parts = {}
-            for part in item.media:
-                part_info = get_media_info(part)
-                if not cfg['FIND_DUPLICATE_FILEPATHS_ONLY']:
-                    part_info['score'] = get_score(part_info)
-                part_info['show_key'] = item.key
-                log.info("ID: %r - Score: %s - Meta:\n%r", part.id, part_info.get('score', 'N/A'),
-                         part_info)
-                parts[part.id] = part_info
-            process_later[title] = parts
+    for section_result in completed_sections:
+        section, dupe_count, section_items = section_result
+        print("Found %d dupes for section %r" % (dupe_count, section))
+        process_later.update(section_items)
 
     # process processed items
     time.sleep(5)
