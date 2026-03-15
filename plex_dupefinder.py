@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import ddtrace.sourcecode.setuptools_auto
+import logging
+
 import collections
 import concurrent.futures
 import itertools
@@ -16,34 +19,49 @@ try:
     from urlparse import urljoin
 except ImportError:
     from urllib.parse import urljoin
-
 from plexapi.server import PlexServer
 import requests
+from ddtrace.debugging import DynamicInstrumentation
+from ddtrace import tracer
 
+DynamicInstrumentation.enable()
+ddtrace.patch(logging=True)
 ############################################################
 # INIT
 ############################################################
 
 # Setup logger
+FORMAT = ('%(asctime)s %(levelname)s [%(name)s] [%(filename)s:%(lineno)d] '
+          '[dd.service=%(dd.service)s dd.env=%(dd.env)s dd.version=%(dd.version)s dd.trace_id=%(dd.trace_id)s dd.span_id=%(dd.span_id)s] '
+          '- %(message)s')
+
+
 log_filename = os.path.join(os.path.dirname(os.path.realpath(sys.argv[0])), 'activity.log')
 logging.basicConfig(
     filename=log_filename,
     level=logging.DEBUG,
-    format='[%(asctime)s] %(levelname)s - %(message)s',
-    datefmt='%H:%M:%S'
+    format=FORMAT,
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
 logging.getLogger('urllib3.connectionpool').disabled = True
-log = logging.getLogger("Plex_Dupefinder")
 
-# Setup PlexServer object
-try:
-    plex = PlexServer(cfg['PLEX_SERVER'], cfg['PLEX_TOKEN'])
-except:
-    log.exception("Exception connecting to server %r with token %r", cfg['PLEX_SERVER'], cfg['PLEX_TOKEN'])
-    print(f"Exception connecting to {cfg['PLEX_SERVER']} with token: {cfg['PLEX_TOKEN']}")
+# Set JSON formatter for file handler
+from pythonjsonlogger import jsonlogger
+for handler in logging.getLogger().handlers:
+    if isinstance(handler, logging.FileHandler):
+        handler.setFormatter(jsonlogger.JsonFormatter(FORMAT))
 
-    exit(1)
+# Add console handler for simultaneous console output
+import sys
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter('%(asctime)s %(levelname)s - %(message)s')
+console_handler.setFormatter(console_formatter)
+logging.getLogger('').addHandler(console_handler)
 
+log = logging.getLogger(__name__)
+
+@tracer.wrap()
 
 ############################################################
 # PLEX METHODS
@@ -51,8 +69,14 @@ except:
 
 
 def get_dupes(plex_section_name):
-    sec_type = get_section_type(plex_section_name)
-    dupe_search_results = plex.library.section(plex_section_name).search(duplicate=True, libtype=sec_type)
+    try:
+        plex_section = plex.library.section(plex_section_name)
+        sec_type = 'episode' if plex_section.type == 'show' else 'movie'
+    except Exception:
+        log.exception("Exception occurred while trying to lookup the section type for Library: %s", plex_section_name)
+        exit(1)
+
+    dupe_search_results = plex_section.search(duplicate=True, libtype=sec_type)
 
     dupe_search_results_new = dupe_search_results.copy()
     if cfg['FIND_DUPLICATE_FILEPATHS_ONLY']:
@@ -60,15 +84,6 @@ def get_dupes(plex_section_name):
             if any(x != dupe.locations[0] for x in dupe.locations):
                 dupe_search_results_new.remove(dupe)
     return dupe_search_results_new
-
-
-def get_section_type(plex_section_name):
-    try:
-        plex_section_type = plex.library.section(plex_section_name).type
-    except Exception:
-        log.exception("Exception occurred while trying to lookup the section type for Library: %s", plex_section_name)
-        exit(1)
-    return 'episode' if plex_section_type == 'show' else 'movie'
 
 
 def get_score(media_info):
@@ -201,9 +216,9 @@ def delete_item(show_key, media_id):
     delete_url = urljoin(cfg['PLEX_SERVER'], '%s/media/%d' % (show_key, media_id))
     log.debug("Sending DELETE request to %r" % delete_url)
     if requests.delete(delete_url, headers={'X-Plex-Token': cfg['PLEX_TOKEN']}).status_code == 200:
-        print("\t\tDeleted media item: %r" % media_id)
+        log.info("\t\tDeleted media item: %r" % media_id)
     else:
-        print("\t\tError deleting media item: %r" % media_id)
+        log.info("\t\tError deleting media item: %r" % media_id)
 
 
 ############################################################
@@ -348,7 +363,8 @@ def process_section(section):
 ############################################################
 
 if __name__ == "__main__":
-    print("""
+    with tracer.trace("plex_dupefinder_run"):
+        log.info("""
        _                 _                   __ _           _
  _ __ | | _____  __   __| |_   _ _ __   ___ / _(_)_ __   __| | ___ _ __
 | '_ \| |/ _ \ \/ /  / _` | | | | '_ \ / _ \ |_| | '_ \ / _` |/ _ \ '__|
@@ -365,23 +381,45 @@ if __name__ == "__main__":
 #                   GNU General Public License v3.0                     #
 #########################################################################
 """)
-    print("Initialized")
+    log.info("Initialized")
+
+    # Setup PlexServer object
+    try:
+        plex = PlexServer(cfg['PLEX_SERVER'], cfg['PLEX_TOKEN'])
+    except Exception as e:
+        log.exception("Exception connecting to server %r with token %r", cfg.get('PLEX_SERVER'), cfg.get('PLEX_TOKEN'))
+        log.error(f"Exception connecting to {cfg.get('PLEX_SERVER')} with token: {cfg.get('PLEX_TOKEN')}")
+        log.error(f"Error: {e}")
+        sys.exit(1)
+
     process_later = {}
     # process sections
-    print("Finding dupes...")
-    completed_sections = [None] * len(cfg['PLEX_LIBRARIES'])
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(cfg['PLEX_LIBRARIES']))) as executor:
-        futures = {
-            executor.submit(process_section, section): idx
-            for idx, section in enumerate(cfg['PLEX_LIBRARIES'])
-        }
-        for future in concurrent.futures.as_completed(futures):
-            completed_sections[futures[future]] = future.result()
+    log.info("Finding dupes...")
+    for section in cfg['PLEX_LIBRARIES']:
+        dupes = get_dupes(section)
+        log.info("Found %d dupes for section %r" % (len(dupes), section))
+        # loop returned duplicates
+        for item in dupes:
+            if item.type == 'episode':
+                title = "%s - %02dx%02d - %s" % (
+                    item.grandparentTitle, int(item.parentIndex), int(item.index), item.title)
+            elif item.type == 'movie':
+                title = item.title
+            else:
+                title = 'Unknown'
 
-    for section_result in completed_sections:
-        section, dupe_count, section_items = section_result
-        print("Found %d dupes for section %r" % (dupe_count, section))
-        process_later.update(section_items)
+            log.info("Processing: %r", title)
+            # loop returned parts for media item (copy 1, copy 2...)
+            parts = {}
+            for part in item.media:
+                part_info = get_media_info(part)
+                if not cfg['FIND_DUPLICATE_FILEPATHS_ONLY']:
+                    part_info['score'] = get_score(part_info)
+                part_info['show_key'] = item.key
+                log.info("ID: %r - Score: %s - Meta:\n%r", part.id, part_info.get('score', 'N/A'),
+                         part_info)
+                parts[part.id] = part_info
+            process_later[title] = parts
 
     # process processed items
     time.sleep(5)
@@ -389,7 +427,7 @@ if __name__ == "__main__":
         if not cfg['AUTO_DELETE']:
             partz = {}
             # manual delete
-            print("\nWhich media item do you wish to keep for %r ?\n" % item)
+            log.info("\nWhich media item do you wish to keep for %r ?\n" % item)
 
             sort_key = None
             sort_order = None
@@ -411,27 +449,27 @@ if __name__ == "__main__":
                 partz[media_id] = part_info
 
             headers, data = build_tabulated(partz, media_items)
-            print(tabulate(data, headers=headers))
+            log.info(tabulate(data, headers=headers))
 
             keep_item = input("\nChoose item to keep (0 or s = skip | 1 or b = best): ")
             if (keep_item.lower() != 's') and (keep_item.lower() == 'b' or 0 < int(keep_item) <= len(media_items)):
                 write_decision(title=item)
                 for media_id, part_info in parts.items():
                     if keep_item.lower() == 'b' and best_item is not None and best_item == part_info:
-                        print("\tKeeping  : %r" % media_id)
+                        log.info("\tKeeping  : %r" % media_id)
                         write_decision(keeping=part_info)
                     elif keep_item.lower() != 'b' and len(media_items) and media_id == media_items[int(keep_item)]:
-                        print("\tKeeping  : %r" % media_id)
+                        log.info("\tKeeping  : %r" % media_id)
                         write_decision(keeping=part_info)
                     else:
-                        print("\tRemoving : %r" % media_id)
+                        log.info("\tRemoving : %r" % media_id)
                         delete_item(part_info['show_key'], media_id)
                         write_decision(removed=part_info)
                         time.sleep(2)
             elif keep_item.lower() == 's' or int(keep_item) == 0:
-                print("Skipping deletion(s) for %r" % item)
+                log.info("Skipping deletion(s) for %r" % item)
             else:
-                print("Unexpected response, skipping deletion(s) for %r" % item)
+                log.info("Unexpected response, skipping deletion(s) for %r" % item)
         else:
             # auto delete
             print("\nDetermining best media item to keep for %r ..." % item)
@@ -459,15 +497,15 @@ if __name__ == "__main__":
                 write_decision(title=item)
                 for media_id, part_info in parts.items():
                     if media_id == keep_id:
-                        print("\tKeeping  : %r - %r" % (media_id, part_info['file']))
+                        log.info("\tKeeping  : %r - %r" % (media_id, part_info['file']))
                         write_decision(keeping=part_info)
                     else:
-                        print("\tRemoving : %r - %r" % (media_id, part_info['file']))
+                        log.info("\tRemoving : %r - %r" % (media_id, part_info['file']))
                         if should_skip(part_info['file']):
-                            print("\tSkipping removal of this item as there is a match in SKIP_LIST")
+                            log.info("\tSkipping removal of this item as there is a match in SKIP_LIST")
                             continue
                         delete_item(part_info['show_key'], media_id)
                         write_decision(removed=part_info)
                         time.sleep(2)
             else:
-                print("Unable to determine best media item to keep for %r", item)
+                log.info("Unable to determine best media item to keep for %r", item)
