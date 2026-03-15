@@ -50,8 +50,14 @@ except:
 
 
 def get_dupes(plex_section_name):
-    sec_type = get_section_type(plex_section_name)
-    dupe_search_results = plex.library.section(plex_section_name).search(duplicate=True, libtype=sec_type)
+    try:
+        plex_section = plex.library.section(plex_section_name)
+        sec_type = 'episode' if plex_section.type == 'show' else 'movie'
+    except Exception:
+        log.exception("Exception occurred while trying to lookup the section type for Library: %s", plex_section_name)
+        exit(1)
+
+    dupe_search_results = plex_section.search(duplicate=True, libtype=sec_type)
 
     dupe_search_results_new = dupe_search_results.copy()
     if cfg['FIND_DUPLICATE_FILEPATHS_ONLY']:
@@ -59,15 +65,6 @@ def get_dupes(plex_section_name):
             if any(x != dupe.locations[0] for x in dupe.locations):
                 dupe_search_results_new.remove(dupe)
     return dupe_search_results_new
-
-
-def get_section_type(plex_section_name):
-    try:
-        plex_section_type = plex.library.section(plex_section_name).type
-    except Exception:
-        log.exception("Exception occurred while trying to lookup the section type for Library: %s", plex_section_name)
-        exit(1)
-    return 'episode' if plex_section_type == 'show' else 'movie'
 
 
 def get_score(media_info):
