@@ -7,7 +7,7 @@ import os
 os.environ['DD_SERVICE'] = 'plex_dupefinder'
 os.environ['DD_REQUESTS_SERVICE'] = 'plex'
 os.environ['DD_ENV'] = 'production'
-os.environ['DD_VERSION'] = '1.0.5'
+os.environ['DD_VERSION'] = '1.0.6'
 os.environ['DD_TRACE_DEBUG'] = 'false'
 
 import ddtrace.sourcecode.setuptools_auto
@@ -315,7 +315,6 @@ def millis_to_string(millis):
     return "%d milliseconds" % millis
 
 
-@lru_cache
 def bytes_to_string(size_bytes):
     """
     reference: https://stackoverflow.com/a/6547474
@@ -341,7 +340,6 @@ def bytes_to_string(size_bytes):
     return "%d bytes" % size_bytes
 
 
-@lru_cache
 def kbps_to_string(size_kbps):
     try:
         if size_kbps < 1024:
