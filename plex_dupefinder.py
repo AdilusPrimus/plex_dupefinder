@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# https://github.com/adilusprimus/plex_dupefinder
+
 import ddtrace.sourcecode.setuptools_auto
 import sys
 import logging
@@ -22,6 +25,13 @@ from ddtrace.debugging import DynamicInstrumentation
 from ddtrace import tracer    
 from openfeature.evaluation_context import EvaluationContext
 
+# Set Datadog service name
+import os
+os.environ['DD_SERVICE'] = 'plex_dupefinder'
+os.environ['DD_REQUESTS_SERVICE'] = 'plex'
+os.environ['DD_ENV'] = 'production'
+os.environ['DD_VERSION'] = '1.0.5'
+
 # Start the Datadog tracer
 tracer.configure()
 
@@ -29,6 +39,7 @@ tracer.configure()
 DynamicInstrumentation.enable()
 from ddtrace import patch
 patch(logging=True)
+patch(requests=True)
 
 ############################################################
 # INIT
