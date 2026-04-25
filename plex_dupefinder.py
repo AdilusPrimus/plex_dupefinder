@@ -2,6 +2,14 @@
 
 # https://github.com/adilusprimus/plex_dupefinder
 
+# Set Datadog environment variables early
+import os
+os.environ['DD_SERVICE'] = 'plex_dupefinder'
+os.environ['DD_REQUESTS_SERVICE'] = 'plex'
+os.environ['DD_ENV'] = 'production'
+os.environ['DD_VERSION'] = '1.0.5'
+os.environ['DD_TRACE_DEBUG'] = 'false'
+
 import ddtrace.sourcecode.setuptools_auto
 import sys
 import logging
@@ -24,13 +32,6 @@ import requests
 from ddtrace.debugging import DynamicInstrumentation
 from ddtrace import tracer    
 from openfeature.evaluation_context import EvaluationContext
-
-# Set Datadog service name
-import os
-os.environ['DD_SERVICE'] = 'plex_dupefinder'
-os.environ['DD_REQUESTS_SERVICE'] = 'plex'
-os.environ['DD_ENV'] = 'production'
-os.environ['DD_VERSION'] = '1.0.5'
 
 # Start the Datadog tracer
 tracer.configure()
@@ -174,8 +175,7 @@ def get_score(media_info):
         log.debug("Added %d to score for total file size", int(media_info['file_size']) / 100000)
     return int(score)
 
-
-@lru_cache(maxsize=8192)
+@lru_cache
 def get_filename_score(filename):
     total_score = 0
     for filename_keyword, keyword_score in FILENAME_SCORE_RULES:
@@ -295,12 +295,12 @@ def should_skip(files):
     return any(should_skip_path(str(files_item).lower()) for files_item in files)
 
 
-@lru_cache(maxsize=8192)
+@lru_cache
 def should_skip_path(file_path):
     return any(skip_item in file_path for skip_item in SKIP_LIST)
 
 
-@lru_cache(maxsize=8192)
+@lru_cache
 def millis_to_string(millis):
     """ reference: https://stackoverflow.com/a/35990338 """
     try:
@@ -315,7 +315,7 @@ def millis_to_string(millis):
     return "%d milliseconds" % millis
 
 
-@lru_cache(maxsize=8192)
+@lru_cache
 def bytes_to_string(size_bytes):
     """
     reference: https://stackoverflow.com/a/6547474
@@ -341,7 +341,7 @@ def bytes_to_string(size_bytes):
     return "%d bytes" % size_bytes
 
 
-@lru_cache(maxsize=8192)
+@lru_cache
 def kbps_to_string(size_kbps):
     try:
         if size_kbps < 1024:
