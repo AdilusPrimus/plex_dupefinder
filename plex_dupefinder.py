@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+
+# https://github.com/adilusprimus/plex_dupefinder
+
+# Set Datadog environment variables early
+import os
+os.environ['DD_SERVICE'] = 'plex_dupefinder'
+os.environ['DD_REQUESTS_SERVICE'] = 'plex'
+os.environ['DD_ENV'] = 'production'
+os.environ['DD_VERSION'] = '1.0.6'
+os.environ['DD_TRACE_DEBUG'] = 'false'
+
 import ddtrace.sourcecode.setuptools_auto
 import sys
 import logging
@@ -26,9 +37,10 @@ from openfeature.evaluation_context import EvaluationContext
 tracer.configure()
 
 # Create and register the Datadog OpenFeature provider
-DynamicInstrumentation.enable()
+# DynamicInstrumentation.enable()  # Disabled due to probe installation conflicts
 from ddtrace import patch
 patch(logging=True)
+patch(requests=True)
 
 ############################################################
 # INIT
@@ -163,8 +175,7 @@ def get_score(media_info):
         log.debug("Added %d to score for total file size", int(media_info['file_size']) / 100000)
     return int(score)
 
-
-@lru_cache(maxsize=8192)
+@lru_cache
 def get_filename_score(filename):
     total_score = 0
     for filename_keyword, keyword_score in FILENAME_SCORE_RULES:
@@ -284,12 +295,12 @@ def should_skip(files):
     return any(should_skip_path(str(files_item).lower()) for files_item in files)
 
 
-@lru_cache(maxsize=8192)
+@lru_cache
 def should_skip_path(file_path):
     return any(skip_item in file_path for skip_item in SKIP_LIST)
 
 
-@lru_cache(maxsize=8192)
+@lru_cache
 def millis_to_string(millis):
     """ reference: https://stackoverflow.com/a/35990338 """
     try:
@@ -304,7 +315,7 @@ def millis_to_string(millis):
     return "%d milliseconds" % millis
 
 
-@lru_cache(maxsize=8192)
+@lru_cache
 def bytes_to_string(size_bytes):
     """
     reference: https://stackoverflow.com/a/6547474
@@ -330,7 +341,7 @@ def bytes_to_string(size_bytes):
     return "%d bytes" % size_bytes
 
 
-@lru_cache(maxsize=8192)
+@lru_cache
 def kbps_to_string(size_kbps):
     try:
         if size_kbps < 1024:
@@ -409,8 +420,7 @@ def process_section(section):
 ############################################################
 
 if __name__ == "__main__":
-    with tracer.trace("plex_dupefinder_run"):
-        log.info(r"""
+    log.info(r"""
         _                 _                   __ _           _
     _ __ | | _____  __   __| |_   _ _ __   ___ / _(_)_ __   __| | ___ _ __
     | '_ \| |/ _ \ \/ /  / _` | | | | '_ \ / _ \ |_| | '_ \ / _` |/ _ \ '__|
@@ -427,7 +437,7 @@ if __name__ == "__main__":
     #                   GNU General Public License v3.0                     #
     #########################################################################
         """)
-        log.info("Initialized")
+    log.info("Initialized")
 
     # Setup PlexServer object
     try:
@@ -451,8 +461,6 @@ if __name__ == "__main__":
             _, dupe_count, section_results = section_futures[section].result()
             log.info("Found %d dupes for section %r" % (dupe_count, section))
             process_later.update(section_results)
-
-    # process processed items
     time.sleep(5)
     for item, parts in process_later.items():
         if not cfg['AUTO_DELETE']:
