@@ -1,3 +1,5 @@
 tabulate~=0.8.2
 requests>=2.33.1
 PlexAPI==4.13.0
+ddtrace>=3.18.0
+
